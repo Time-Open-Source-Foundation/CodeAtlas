@@ -4,9 +4,11 @@ AI-powered code architecture analysis - Available as VS Code extension and web a
 
 ## 🎥 Demo
 
-https://github.com/user-attachments/assets/demo.mp4.mp4
+<video src="https://github.com/Time-Open-Source-Foundation/CodeAtlas/raw/feat/complete-backend-implementation/demo/demo.mp4.mp4" controls width="100%"></video>
 
-> **Watch the demo:** See CodeAtlas in action analyzing real codebases with multiple diagram types including architecture, sequence, class diagrams, and data flow visualizations. The demo video is located at `demo/demo.mp4.mp4`.
+> **Watch the demo:** See CodeAtlas in action analyzing real codebases with multiple diagram types including architecture, sequence, class diagrams, and data flow visualizations.
+> 
+> 📹 **[Download Demo Video](./demo/demo.mp4.mp4)** | **[View on GitHub](https://github.com/Time-Open-Source-Foundation/CodeAtlas/blob/feat/complete-backend-implementation/demo/demo.mp4.mp4)**
 
 ## 📦 Packages
 
