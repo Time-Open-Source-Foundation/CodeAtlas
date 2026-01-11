@@ -1,6 +1,376 @@
-import { ArchitectureAnalysis, Module, Relationship } from './types';
+import { ArchitectureAnalysis, Module, Relationship, Diagram } from './types';
 
 export class DiagramGenerator {
+    /**
+     * Generate all applicable diagrams based on the architecture analysis
+     */
+    static generateAllDiagrams(analysis: ArchitectureAnalysis): Diagram[] {
+        const diagrams: Diagram[] = [];
+
+        // 1. Architecture/Component Diagram (always generate)
+        diagrams.push({
+            type: 'architecture',
+            title: 'System Architecture',
+            content: this.generateComponentDiagram(analysis),
+            description: 'Overview of system components and their relationships'
+        });
+
+        // 2. Layered Diagram (if layers exist)
+        if (analysis.layers && analysis.layers.length > 1) {
+            diagrams.push({
+                type: 'architecture',
+                title: 'Layered Architecture',
+                content: this.generateLayeredDiagram(analysis),
+                description: 'Architectural layers and component organization'
+            });
+        }
+
+        // 3. Sequence Diagrams (for main flows)
+        // Auto-detect entry points if not provided
+        if (!analysis.entryPoints || analysis.entryPoints.length === 0) {
+            analysis.entryPoints = this.findEntryPoints(analysis.modules);
+        }
+        
+        const sequenceDiagrams = this.generateSequenceDiagrams(analysis);
+        diagrams.push(...sequenceDiagrams);
+
+        // 4. Class Diagram (if OOP structure detected)
+        if (this.hasOOPStructure(analysis)) {
+            diagrams.push({
+                type: 'class',
+                title: 'Class Relationships',
+                content: this.generateClassDiagram(analysis),
+                description: 'Object-oriented class structure and inheritance'
+            });
+        }
+
+        // 5. Data Flow Diagram (if data layer exists)
+        if (analysis.layers?.some(l => l.name.toLowerCase().includes('data'))) {
+            diagrams.push({
+                type: 'flowchart',
+                title: 'Data Flow',
+                content: this.generateDataFlowDiagram(analysis),
+                description: 'How data flows through the system'
+            });
+        }
+
+        return diagrams;
+    }
+
+    /**
+     * Auto-detect entry points from modules
+     */
+    private static findEntryPoints(modules: Module[]): string[] {
+        const entryPoints = modules
+            .filter(m => {
+                const name = m.name.toLowerCase();
+                const path = m.path.toLowerCase();
+                return name === 'main' || name === 'index' || name === 'app' ||
+                       name === 'extension' || name === 'server' ||
+                       path.includes('/main.') || path.includes('/index.') || 
+                       path.includes('/app.') || path.includes('/server.') ||
+                       path.endsWith('main.ts') || path.endsWith('index.ts') ||
+                       path.endsWith('main.js') || path.endsWith('index.js') ||
+                       path.endsWith('app.ts') || path.endsWith('app.js');
+            })
+            .map(m => m.path);
+        
+        // If no obvious entry points, use the first few modules
+        if (entryPoints.length === 0 && modules.length > 0) {
+            return modules.slice(0, 3).map(m => m.path);
+        }
+        
+        return entryPoints;
+    }
+
+    /**
+     * Check if the codebase has object-oriented structure
+     */
+    private static hasOOPStructure(analysis: ArchitectureAnalysis): boolean {
+        const { modules, relationships } = analysis;
+        
+        // Check for class-like modules
+        const hasClasses = modules.some(m => 
+            m.type === 'model' || m.type === 'service' || m.type === 'controller'
+        );
+        
+        // Check for inheritance/implementation relationships
+        const hasOOPRelations = relationships.some(r => 
+            r.type === 'extends' || r.type === 'implements'
+        );
+        
+        return hasClasses || hasOOPRelations;
+    }
+
+    /**
+     * Generate sequence diagrams for main user flows
+     */
+    private static generateSequenceDiagrams(analysis: ArchitectureAnalysis): Diagram[] {
+        const { modules, relationships, entryPoints } = analysis;
+        const diagrams: Diagram[] = [];
+
+        if (!entryPoints || entryPoints.length === 0) return diagrams;
+
+        // Generate sequence diagram for each entry point
+        entryPoints.slice(0, 3).forEach((entryPoint, idx) => {
+            const flow = this.traceExecutionFlow(entryPoint, modules, relationships);
+            if (flow.length > 1) {
+                diagrams.push({
+                    type: 'sequence',
+                    title: `Flow: ${this.formatModuleName(entryPoint)}`,
+                    content: this.generateSequenceDiagram(flow, modules),
+                    description: `Execution flow starting from ${entryPoint}`
+                });
+            }
+        });
+
+        return diagrams;
+    }
+
+    /**
+     * Trace execution flow from an entry point
+     */
+    private static traceExecutionFlow(
+        startPath: string, 
+        modules: Module[], 
+        relationships: Relationship[],
+        maxDepth: number = 5
+    ): string[] {
+        const flow: string[] = [startPath];
+        const visited = new Set<string>([startPath]);
+        let currentPaths = [startPath];
+
+        for (let depth = 0; depth < maxDepth; depth++) {
+            const nextPaths: string[] = [];
+            
+            for (const current of currentPaths) {
+                const deps = relationships
+                    .filter(r => r.from === current && !visited.has(r.to))
+                    .slice(0, 2); // Limit branches
+                
+                for (const dep of deps) {
+                    flow.push(dep.to);
+                    visited.add(dep.to);
+                    nextPaths.push(dep.to);
+                }
+            }
+            
+            if (nextPaths.length === 0) break;
+            currentPaths = nextPaths;
+        }
+
+        return flow;
+    }
+
+    /**
+     * Generate a sequence diagram from execution flow
+     */
+    private static generateSequenceDiagram(flow: string[], modules: Module[]): string {
+        const lines: string[] = ['sequenceDiagram'];
+        lines.push('    autonumber');
+        lines.push('    box User Interaction');
+        lines.push('    participant User');
+        lines.push('    end');
+        
+        // Get unique modules in the flow
+        const flowModules = flow.slice(0, 8); // Limit to 8 for readability
+        const moduleMap = new Map<string, Module>();
+        
+        flowModules.forEach(path => {
+            const module = modules.find(m => m.path === path);
+            if (module) {
+                moduleMap.set(path, module);
+            }
+        });
+
+        // Group by layer
+        const layers = new Map<string, string[]>();
+        moduleMap.forEach((module, path) => {
+            const layer = module.layer || 'other';
+            if (!layers.has(layer)) {
+                layers.set(layer, []);
+            }
+            layers.get(layer)!.push(path);
+        });
+
+        // Add participants by layer
+        layers.forEach((paths, layer) => {
+            const layerName = layer.charAt(0).toUpperCase() + layer.slice(1);
+            lines.push(`    box ${layerName} Layer`);
+            paths.forEach(path => {
+                const module = moduleMap.get(path)!;
+                const name = this.formatModuleName(module.name);
+                lines.push(`    participant ${name.replace(/[^a-zA-Z0-9]/g, '')}`);
+            });
+            lines.push('    end');
+        });
+
+        // Add interactions
+        lines.push('    User->>+' + this.formatModuleName(flowModules[0]).replace(/[^a-zA-Z0-9]/g, '') + ': initiates');
+        
+        for (let i = 0; i < flowModules.length - 1; i++) {
+            const from = flowModules[i];
+            const to = flowModules[i + 1];
+            const fromModule = moduleMap.get(from);
+            const toModule = moduleMap.get(to);
+            
+            if (fromModule && toModule) {
+                const fromName = this.formatModuleName(fromModule.name).replace(/[^a-zA-Z0-9]/g, '');
+                const toName = this.formatModuleName(toModule.name).replace(/[^a-zA-Z0-9]/g, '');
+                const action = toModule.type === 'service' ? 'calls' : 'uses';
+                lines.push(`    ${fromName}->>+${toName}: ${action}`);
+                lines.push(`    ${toName}-->>-${fromName}: result`);
+            }
+        }
+
+        const lastModule = flowModules[flowModules.length - 1];
+        const lastModuleName = moduleMap.get(lastModule);
+        if (lastModuleName) {
+            lines.push('    ' + this.formatModuleName(lastModuleName.name).replace(/[^a-zA-Z0-9]/g, '') + '-->>-User: response');
+        }
+
+        return lines.join('\n');
+    }
+
+    /**
+     * Generate a class diagram
+     */
+    private static generateClassDiagram(analysis: ArchitectureAnalysis): string {
+        const { modules, relationships } = analysis;
+        const lines: string[] = ['classDiagram'];
+        
+        // Filter to relevant modules (models, services, controllers)
+        const relevantModules = modules.filter(m => 
+            m.type === 'model' || m.type === 'service' || 
+            m.type === 'controller' || m.type === 'component'
+        ).slice(0, 15); // Limit for readability
+
+        // Add classes
+        relevantModules.forEach(module => {
+            const className = this.formatModuleName(module.name).replace(/[^a-zA-Z0-9]/g, '');
+            lines.push(`    class ${className} {`);
+            
+            // Add exports as methods
+            if (module.exports && module.exports.length > 0) {
+                module.exports.slice(0, 5).forEach(exp => {
+                    lines.push(`        +${exp}()`);
+                });
+            } else {
+                lines.push(`        +${module.type}()`);
+            }
+            
+            lines.push(`    }`);
+            
+            // Add stereotype based on type
+            const stereotype = `<<${module.type}>>`;
+            lines.push(`    ${className} : ${stereotype}`);
+        });
+
+        // Add relationships
+        const modulePaths = new Set(relevantModules.map(m => m.path));
+        relationships
+            .filter(r => modulePaths.has(r.from) && modulePaths.has(r.to))
+            .slice(0, 20)
+            .forEach(r => {
+                const fromModule = relevantModules.find(m => m.path === r.from);
+                const toModule = relevantModules.find(m => m.path === r.to);
+                
+                if (fromModule && toModule) {
+                    const fromName = this.formatModuleName(fromModule.name).replace(/[^a-zA-Z0-9]/g, '');
+                    const toName = this.formatModuleName(toModule.name).replace(/[^a-zA-Z0-9]/g, '');
+                    
+                    let arrow = '-->';
+                    if (r.type === 'extends') arrow = '--|>';
+                    else if (r.type === 'implements') arrow = '..|>';
+                    else if (r.type === 'composes') arrow = '*--';
+                    else if (r.type === 'aggregates') arrow = 'o--';
+                    
+                    lines.push(`    ${fromName} ${arrow} ${toName} : ${r.type}`);
+                }
+            });
+
+        return lines.join('\n');
+    }
+
+    /**
+     * Generate a data flow diagram
+     */
+    private static generateDataFlowDiagram(analysis: ArchitectureAnalysis): string {
+        const { modules, relationships } = analysis;
+        const lines: string[] = ['flowchart LR'];
+        
+        // Style definitions
+        lines.push('    classDef input fill:#3B82F6,stroke:#1E40AF,stroke-width:2px,color:#fff');
+        lines.push('    classDef process fill:#10B981,stroke:#047857,stroke-width:2px,color:#fff');
+        lines.push('    classDef storage fill:#F59E0B,stroke:#B45309,stroke-width:2px,color:#fff');
+        lines.push('    classDef output fill:#EF4444,stroke:#B91C1C,stroke-width:2px,color:#fff');
+        lines.push('');
+
+        // Find data-related modules
+        const dataModules = modules.filter(m => 
+            m.layer === 'data' || m.type === 'model' || 
+            m.path.toLowerCase().includes('data') ||
+            m.path.toLowerCase().includes('database') ||
+            m.path.toLowerCase().includes('repository')
+        );
+
+        // Create nodes
+        const nodeMap = new Map<string, string>();
+        dataModules.forEach((m, idx) => {
+            const nodeId = `D${idx}`;
+            const name = this.formatModuleName(m.name);
+            
+            let shape = '[' + name + ']';
+            let styleClass = 'process';
+            
+            if (m.type === 'model') {
+                shape = '[(💾 ' + name + ')]';
+                styleClass = 'storage';
+            } else if (m.path.includes('input') || m.path.includes('controller')) {
+                shape = '[/📥 ' + name + '/]';
+                styleClass = 'input';
+            } else if (m.path.includes('output') || m.path.includes('view')) {
+                shape = '[\\📤 ' + name + '\\]';
+                styleClass = 'output';
+            }
+            
+            lines.push(`    ${nodeId}${shape}`);
+            lines.push(`    class ${nodeId} ${styleClass}`);
+            nodeMap.set(m.path, nodeId);
+        });
+
+        lines.push('');
+
+        // Add data flow relationships
+        const dataPaths = new Set(dataModules.map(m => m.path));
+        relationships
+            .filter(r => dataPaths.has(r.from) && dataPaths.has(r.to))
+            .forEach(r => {
+                const fromId = nodeMap.get(r.from);
+                const toId = nodeMap.get(r.to);
+                
+                if (fromId && toId) {
+                    const label = r.type === 'uses' ? 'reads/writes' : r.type;
+                    lines.push(`    ${fromId} -->|${label}| ${toId}`);
+                }
+            });
+
+        return lines.join('\n');
+    }
+
+    /**
+     * Format module name for display
+     */
+    private static formatModuleName(name: string): string {
+        return name
+            .replace(/([A-Z])/g, ' $1')
+            .replace(/[_-]/g, ' ')
+            .trim()
+            .split(' ')
+            .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+            .join(' ');
+    }
+
     /**
      * Generate a component diagram showing modules and relationships
      * Enhanced version with better organization, visual hierarchy, and informative labels
@@ -58,11 +428,14 @@ export class DiagramGenerator {
                 
                 typeModules.forEach(m => {
                     const nodeId = `M${nodeIdx}`;
-                    const displayName = this.formatModuleName(m.name || m.path.split('/').pop() || `Module${nodeIdx}`);
+                    const cleanLabel = this.formatModuleName(m.name || m.path.split('/').pop() || `Module${nodeIdx}`).replace(/[\n"]/g, ' ');
                     const shape = this.getNodeShape(m.type);
-                    const nodeLabel = this.createEnhancedNodeLabel(m, entryPointPaths.has(m.path), coreComponentPaths.has(m.path));
                     
-                    lines.push(`        ${nodeId}${shape.start}"${nodeLabel}"${shape.end}`);
+                    // Add entry/core indicators
+                    const prefix = entryPointPaths.has(m.path) ? '🚀 ' : 
+                                  coreComponentPaths.has(m.path) ? '⭐ ' : '';
+                    
+                    lines.push(`        ${nodeId}${shape.start}${prefix}${cleanLabel}${shape.end}`);
                     nodeMap.set(m.path, nodeId);
                     
                     // Apply enhanced styling
@@ -83,11 +456,14 @@ export class DiagramGenerator {
                 // Single module - add directly
                 const m = typeModules[0];
                 const nodeId = `M${nodeIdx}`;
-                const displayName = this.formatModuleName(m.name || m.path.split('/').pop() || `Module${nodeIdx}`);
+                const cleanLabel = this.formatModuleName(m.name || m.path.split('/').pop() || `Module${nodeIdx}`).replace(/[\n"]/g, ' ');
                 const shape = this.getNodeShape(m.type);
-                const nodeLabel = this.createEnhancedNodeLabel(m, entryPointPaths.has(m.path), coreComponentPaths.has(m.path));
                 
-                lines.push(`    ${nodeId}${shape.start}"${nodeLabel}"${shape.end}`);
+                // Add entry/core indicators
+                const prefix = entryPointPaths.has(m.path) ? '🚀 ' : 
+                              coreComponentPaths.has(m.path) ? '⭐ ' : '';
+                
+                lines.push(`    ${nodeId}${shape.start}${prefix}${cleanLabel}${shape.end}`);
                 nodeMap.set(m.path, nodeId);
                 
                 let styleClass: string = m.type || 'other';
@@ -151,15 +527,6 @@ export class DiagramGenerator {
         return label;
     }
     
-    
-    private static formatModuleName(name: string): string {
-        // Truncate long names and format nicely
-        if (name.length > 30) {
-            return name.substring(0, 27) + '...';
-        }
-        return name;
-    }
-    
     private static formatRelationshipLabel(r: Relationship): string {
         // Prioritize description if available and concise
         if (r.description && r.description.length < 25) {
@@ -219,14 +586,15 @@ export class DiagramGenerator {
                 layer.modules.forEach((modulePath, modIdx) => {
                     const module = modules.find(m => m.path === modulePath);
                     const nodeId = `L${layerIdx}_M${modIdx}`;
-                    const nodeLabel = this.createEnhancedNodeLabel(
-                        module || { name: modulePath.split('/').pop() || `Module${modIdx}`, path: modulePath, type: 'other' },
-                        entryPointPaths.has(modulePath),
-                        coreComponentPaths.has(modulePath)
-                    );
+                    const moduleName = module?.name || modulePath.split('/').pop() || `Module${modIdx}`;
+                    const cleanLabel = this.formatModuleName(moduleName).replace(/[\n"]/g, ' ');
                     const shape = module ? this.getNodeShape(module.type) : { start: '[', end: ']' };
                     
-                    lines.push(`        ${nodeId}${shape.start}"${nodeLabel}"${shape.end}`);
+                    // Add entry/core indicators
+                    const prefix = entryPointPaths.has(modulePath) ? '🚀 ' : 
+                                  coreComponentPaths.has(modulePath) ? '⭐ ' : '';
+                    
+                    lines.push(`        ${nodeId}${shape.start}${prefix}${cleanLabel}${shape.end}`);
                     layerModuleMap.set(modulePath, nodeId);
                     
                     // Apply enhanced layer-based styling

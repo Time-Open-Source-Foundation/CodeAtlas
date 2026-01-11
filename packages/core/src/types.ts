@@ -29,6 +29,13 @@ export interface ArchitecturalPattern {
     description: string;
 }
 
+export interface Diagram {
+    type: 'architecture' | 'sequence' | 'class' | 'flowchart' | 'state' | 'er';
+    title: string;
+    content: string;
+    description?: string;
+}
+
 export interface ArchitectureAnalysis {
     modules: Module[];
     relationships: Relationship[];
@@ -40,6 +47,7 @@ export interface ArchitectureAnalysis {
     }[];
     entryPoints?: string[];
     coreComponents?: string[];
+    diagrams?: Diagram[];
     raw?: string;
 }
 

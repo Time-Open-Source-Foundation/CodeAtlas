@@ -39,7 +39,7 @@ OLLAMA_MODEL=qwen2.5-coder:3b
 
 # Gemini Configuration (if using Gemini)
 GEMINI_API_KEY=your_key_here
-GEMINI_MODEL=gemini-2.0-flash
+GEMINI_MODEL=gemini-2.5-flash
 ```
 
 ### Run Development Server

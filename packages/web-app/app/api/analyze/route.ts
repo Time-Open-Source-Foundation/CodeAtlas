@@ -57,7 +57,7 @@ export async function POST(request: NextRequest) {
       const gemini = new GeminiClient(
         logger,
         apiKey,
-        process.env.GEMINI_MODEL || 'gemini-2.0-flash'
+        process.env.GEMINI_MODEL || 'gemini-2.5-flash'
       );
       
       analysis = await gemini.analyze(files);
@@ -86,8 +86,8 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Generate diagram
-    const diagram = DiagramGenerator.generateComponentDiagram(analysis);
+    // Generate all diagrams
+    const diagrams = DiagramGenerator.generateAllDiagrams(analysis);
 
     // Ensure all required fields are present
     const response: any = {
@@ -102,7 +102,8 @@ export async function POST(request: NextRequest) {
       layers: analysis.layers || [],
       entryPoints: analysis.entryPoints || [],
       coreComponents: analysis.coreComponents || [],
-      diagram,
+      diagrams,  // Multiple diagrams
+      diagram: diagrams.length > 0 ? diagrams[0].content : '',  // Legacy support
       repoInfo: {
         owner: repoInfo.owner,
         repo: repoInfo.repo,

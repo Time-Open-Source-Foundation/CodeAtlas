@@ -47,7 +47,7 @@ export default function Home() {
           <h1 className="text-4xl font-medium text-gray-900 mb-2">CodeAtlas</h1>
           <p className="text-gray-600">Analyze GitHub repository architecture</p>
         </div>
-
+        
         {/* Main Content */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
           {/* Left Column - Form */}

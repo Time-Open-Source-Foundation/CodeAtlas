@@ -19,7 +19,7 @@ export class GeminiClient {
     constructor(
         private logger: ILogger,
         apiKey: string,
-        model: string = 'gemini-2.0-flash'
+        model: string = 'gemini-2.5-flash'
     ) {
         this.apiKey = apiKey;
         this.model = model;
@@ -231,7 +231,7 @@ ${filesList}`;
                 temperature: 0.2,
                 topK: 40,
                 topP: 0.95,
-                maxOutputTokens: 8192,
+                maxOutputTokens: 65536, // gemini-2.5-flash supports up to 65k output tokens
             }
         };
 
@@ -274,6 +274,30 @@ ${filesList}`;
             jsonStr = jsonStr.replace(/^```json\s*\n/, '').replace(/\n```\s*$/, '');
         } else if (jsonStr.startsWith('```')) {
             jsonStr = jsonStr.replace(/^```\s*\n/, '').replace(/\n```\s*$/, '');
+        }
+        
+        // Extract JSON between first { and last }
+        const firstBrace = jsonStr.indexOf('{');
+        const lastBrace = jsonStr.lastIndexOf('}');
+        if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+            jsonStr = jsonStr.substring(firstBrace, lastBrace + 1);
+        }
+        
+        // Critical: Check for truncated JSON
+        const openBraces = (jsonStr.match(/\{/g) || []).length;
+        const closeBraces = (jsonStr.match(/\}/g) || []).length;
+        const openBrackets = (jsonStr.match(/\[/g) || []).length;
+        const closeBrackets = (jsonStr.match(/\]/g) || []).length;
+        
+        if (openBraces !== closeBraces || openBrackets !== closeBrackets) {
+            this.logger.error(`⚠️ TRUNCATED JSON detected! Braces: {${openBraces}/${closeBraces}} Brackets: [${openBrackets}/${closeBrackets}]`);
+            // Attempt to fix by closing
+            for (let i = 0; i < openBrackets - closeBrackets; i++) {
+                jsonStr += ']';
+            }
+            for (let i = 0; i < openBraces - closeBraces; i++) {
+                jsonStr += '}';
+            }
         }
 
         try {
@@ -323,10 +347,11 @@ ${filesList}`;
             };
             
             const req = https.request(url, requestOptions, (res) => {
-                let data = '';
-                res.on('data', (chunk) => data += chunk);
+                const chunks: Buffer[] = [];
+                res.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
                 res.on('end', () => {
                     try {
+                        const data = Buffer.concat(chunks).toString('utf-8');
                         const parsed = JSON.parse(data);
                         resolve({ 
                             ok: res.statusCode! >= 200 && res.statusCode! < 300, 
@@ -334,7 +359,8 @@ ${filesList}`;
                             json: async () => parsed 
                         });
                     } catch (e) {
-                        reject(new Error(`Failed to parse JSON: ${e}`));
+                        const data = Buffer.concat(chunks).toString('utf-8');
+                        reject(new Error(`Failed to parse JSON response (${data.length} bytes): ${e}`));
                     }
                 });
             });

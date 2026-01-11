@@ -20,14 +20,16 @@ async function fetchJson(url: string, options: any = {}): Promise<any> {
         };
         
         const req = client.request(url, requestOptions, (res) => {
-            let data = '';
-            res.on('data', (chunk) => data += chunk);
+            const chunks: Buffer[] = [];
+            res.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
             res.on('end', () => {
                 try {
+                    const data = Buffer.concat(chunks).toString('utf-8');
                     const parsed = JSON.parse(data);
                     resolve({ ok: res.statusCode! >= 200 && res.statusCode! < 300, status: res.statusCode, json: async () => parsed });
                 } catch (e) {
-                    reject(new Error(`Failed to parse JSON: ${e}`));
+                    const data = Buffer.concat(chunks).toString('utf-8');
+                    reject(new Error(`Failed to parse JSON response (${data.length} bytes): ${e}`));
                 }
             });
         });
@@ -247,10 +249,10 @@ export class OllamaClient {
                         format: 'json',
                         options: {
                             temperature: 0.0,
-                            num_predict: 2000, // Increased for complete JSON responses
+                            num_predict: 8000, // Significantly increased to prevent truncation
                             top_p: 0.9,
-                            top_k: 40,
-                            stop: ['```', '```json']
+                            top_k: 40
+                            // Removed stop sequences to avoid premature termination
                         }
                     })
                 });
@@ -272,10 +274,10 @@ export class OllamaClient {
                         format: 'json',
                         options: {
                             temperature: 0.0,
-                            num_predict: 2000, // Increased for complete JSON responses
+                            num_predict: 8000, // Significantly increased to prevent truncation
                             top_p: 0.9,
-                            top_k: 40,
-                            stop: ['```', '```json']
+                            top_k: 40
+                            // Removed stop sequences to avoid premature termination
                         }
                     })
                 });
@@ -322,25 +324,58 @@ export class OllamaClient {
                 return this.createFallbackAnalysis(chunkFiles);
             }
             
-            // Check if response looks like JSON (starts with { or [)
+            // Critical: Check for truncated JSON before attempting to parse
             const trimmed = fullResponse.trim();
+            const openBraces = (trimmed.match(/\{/g) || []).length;
+            const closeBraces = (trimmed.match(/\}/g) || []).length;
+            const openBrackets = (trimmed.match(/\[/g) || []).length;
+            const closeBrackets = (trimmed.match(/\]/g) || []).length;
+            
+            if (openBraces !== closeBraces || openBrackets !== closeBrackets) {
+                this.logger.error(`[Chunk ${chunkIndex}/${totalChunks}] TRUNCATED JSON detected! Braces: {${openBraces}/${closeBraces}} Brackets: [${openBrackets}/${closeBrackets}]`);
+                this.logger.error(`[Chunk] This indicates num_predict token limit was reached. Response length: ${fullResponse.length}`);
+                this.logger.error(`[Chunk] Last 200 chars: ${fullResponse.slice(-200)}`);
+                // Try to recover by closing the JSON
+                // This is a best-effort attempt
+            }
+            
+            // Check if response looks like JSON (starts with { or [)
             if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) {
-                this.logger.error(`[Chunk ${chunkIndex}/${totalChunks}] Response doesn't look like JSON`);
-                this.logger.error(`[Chunk] Response starts with: ${trimmed.substring(0, 100)}`);
-                this.logger.error(`[Chunk] Full response: ${fullResponse.substring(0, 500)}`);
-                return this.createFallbackAnalysis(chunkFiles);
+                this.logger.error(`[Chunk ${chunkIndex}/${totalChunks}] Response doesn't start with { or [`);
+                this.logger.info(`[Chunk] Response starts with: ${trimmed.substring(0, 100)}`);
             }
             
             // Parse the response using comprehensive parsing logic
+            // parseOllamaResponse has robust recovery methods, so try it even if response looks odd
             this.logger.info(`[Chunk ${chunkIndex}/${totalChunks}] Attempting to parse response...`);
             const parsed = this.parseOllamaResponse(fullResponse, chunkFiles);
             
             // Validate parsed response has meaningful data
+            // Be more lenient - if we got any modules, use them even if parsing wasn't perfect
             if (!parsed.modules || parsed.modules.length === 0) {
                 this.logger.error(`[Chunk ${chunkIndex}/${totalChunks}] Parsed response has no modules`);
                 this.logger.error(`[Chunk] Parsed keys: ${Object.keys(parsed).join(', ')}`);
                 this.logger.error(`[Chunk] Raw response (first 500 chars): ${fullResponse.substring(0, 500)}`);
-                return this.createFallbackAnalysis(chunkFiles);
+                
+                // Try to extract modules from raw response as last resort
+                const moduleMatches = fullResponse.matchAll(/"name"\s*:\s*"([^"]+)"/g);
+                const extractedModules: string[] = [];
+                for (const match of moduleMatches) {
+                    extractedModules.push(match[1]);
+                }
+                
+                if (extractedModules.length > 0) {
+                    this.logger.info(`[Chunk ${chunkIndex}/${totalChunks}] Extracted ${extractedModules.length} module names from raw response`);
+                    parsed.modules = extractedModules.map(name => ({
+                        name: name,
+                        path: chunkFiles.find(f => f.path.includes(name))?.path || name,
+                        type: this.inferModuleType(name),
+                        layer: this.inferLayer(name),
+                        description: ''
+                    }));
+                } else {
+                    return this.createFallbackAnalysis(chunkFiles);
+                }
             }
             
             // Log success
@@ -737,10 +772,53 @@ Return the complete JSON now:
         jsonString = jsonString.replace(/\/\/.*$/gm, '');
         jsonString = jsonString.replace(/\/\*[\s\S]*?\*\//g, '');
         
-        // Try to parse
+        // Try to parse - with recovery for truncated JSON
         try {
-            const parsed = JSON.parse(jsonString);
-            this.logger.info(`[Chunk] ✅ Parsed successfully!`);
+            let parsed: any = null;
+            let parseAttempt = 0;
+            
+            while (parsed === null && parseAttempt < 3) {
+                try {
+                    parsed = JSON.parse(jsonString);
+                    this.logger.info(`[Chunk] ✅ Parsed successfully on attempt ${parseAttempt + 1}!`);
+                    break;
+                } catch (parseError: any) {
+                    parseAttempt++;
+                    this.logger.info(`[Chunk] Parse attempt ${parseAttempt} failed: ${parseError.message}`);
+                    
+                    if (parseAttempt === 1) {
+                        // First retry: Try to close unclosed arrays and objects
+                        const openBraces = (jsonString.match(/\{/g) || []).length;
+                        const closeBraces = (jsonString.match(/\}/g) || []).length;
+                        const openBrackets = (jsonString.match(/\[/g) || []).length;
+                        const closeBrackets = (jsonString.match(/\]/g) || []).length;
+                        
+                        let fixed = jsonString;
+                        // Add missing closing brackets
+                        for (let i = 0; i < openBrackets - closeBrackets; i++) {
+                            fixed += ']';
+                        }
+                        // Add missing closing braces
+                        for (let i = 0; i < openBraces - closeBraces; i++) {
+                            fixed += '}';
+                        }
+                        jsonString = fixed;
+                        this.logger.info(`[Chunk] Attempting to fix truncated JSON by adding ${openBrackets - closeBrackets} ] and ${openBraces - closeBraces} }`);
+                    } else if (parseAttempt === 2) {
+                        // Second retry: Try to extract just the modules array if present
+                        const modulesMatch = jsonString.match(/"modules"\s*:\s*\[(.*?)\](?=\s*[,}]|$)/s);
+                        if (modulesMatch) {
+                            this.logger.info(`[Chunk] Attempting partial recovery from modules field only`);
+                            // Continue to regex recovery below
+                            break;
+                        }
+                    }
+                }
+            }
+            
+            // If parsing succeeded, normalize the data
+            if (parsed) {
+                this.logger.info(`[Chunk] ✅ Successfully parsed JSON`);
             
             // Normalize modules
             if (parsed.modules && Array.isArray(parsed.modules)) {
@@ -872,6 +950,7 @@ Return the complete JSON now:
                 entryPoints: parsed.entryPoints || [],
                 coreComponents: parsed.coreComponents || []
             };
+            }
         } catch (parseError: any) {
             this.logger.info(`[Chunk] JSON parse error: ${parseError.message}`);
             this.logger.info(`[Chunk] Response length: ${fullResponse.length} chars`);
